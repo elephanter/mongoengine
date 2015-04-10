@@ -5,6 +5,13 @@ Changelog
 
 Changes in 0.9.X - DEV
 ======================
+- ListField of embedded docs doesn't set the _instance attribute when iterating over it #914
+- Support += and *= for ListField #595
+- Use sets for populating dbrefs to dereference
+- Fixed unpickled documents replacing the global field's list. #888
+
+Changes in 0.9.0
+================
 - Update FileField when creating a new file #714
 - Added `EmbeddedDocumentListField` for Lists of Embedded Documents. #826
 - ComplexDateTimeField should fall back to None when null=True #864
@@ -78,6 +85,7 @@ Changes in 0.9.X - DEV
 - Fixed a few instances where reverse_delete_rule was written as reverse_delete_rules. #791
 - Make `in_bulk()` respect `no_dereference()` #775
 - Handle None from model __str__; Fixes #753 #754
+- _get_changed_fields fix for embedded documents with id field. #925
 
 Changes in 0.8.7
 ================
