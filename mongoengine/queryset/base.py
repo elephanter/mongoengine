@@ -21,9 +21,13 @@ from mongoengine.common import _import_class
 from mongoengine.base.common import get_document
 from mongoengine.errors import (OperationError, NotUniqueError,
                                 InvalidQueryError, LookUpError)
+from mongoengine.python_support import IS_PYMONGO_3
 from mongoengine.queryset import transform
 from mongoengine.queryset.field_list import QueryFieldList
 from mongoengine.queryset.visitor import Q, QNode
+
+if IS_PYMONGO_3:
+    from pymongo.collection import ReturnDocument
 
 
 __all__ = ('BaseQuerySet', 'DO_NOTHING', 'NULLIFY', 'CASCADE', 'DENY', 'PULL')
@@ -158,7 +162,8 @@ class BaseQuerySet(object):
             if queryset._as_pymongo:
                 return queryset._get_as_pymongo(queryset._cursor[key])
             return queryset._document._from_son(queryset._cursor[key],
-                                               _auto_dereference=self._auto_dereference, only_fields=self.only_fields)
+                                               _auto_dereference=self._auto_dereference,
+                                               only_fields=self.only_fields)
 
         raise AttributeError
 
@@ -252,54 +257,6 @@ class BaseQuerySet(object):
         .. versionadded:: 0.4
         """
         return self._document(**kwargs).save()
-
-    def get_or_create(self, write_concern=None, auto_save=True,
-                      *q_objs, **query):
-        """Retrieve unique object or create, if it doesn't exist. Returns a
-        tuple of ``(object, created)``, where ``object`` is the retrieved or
-        created object and ``created`` is a boolean specifying whether a new
-        object was created. Raises
-        :class:`~mongoengine.queryset.MultipleObjectsReturned` or
-        `DocumentName.MultipleObjectsReturned` if multiple results are found.
-        A new document will be created if the document doesn't exists; a
-        dictionary of default values for the new document may be provided as a
-        keyword argument called :attr:`defaults`.
-
-        .. note:: This requires two separate operations and therefore a
-            race condition exists.  Because there are no transactions in
-            mongoDB other approaches should be investigated, to ensure you
-            don't accidentally duplicate data when using this method.  This is
-            now scheduled to be removed before 1.0
-
-        :param write_concern: optional extra keyword arguments used if we
-            have to create a new document.
-            Passes any write_concern onto :meth:`~mongoengine.Document.save`
-
-        :param auto_save: if the object is to be saved automatically if
-            not found.
-
-        .. deprecated:: 0.8
-        .. versionchanged:: 0.6 - added `auto_save`
-        .. versionadded:: 0.3
-        """
-        msg = ("get_or_create is scheduled to be deprecated.  The approach is "
-               "flawed without transactions. Upserts should be preferred.")
-        warnings.warn(msg, DeprecationWarning)
-
-        defaults = query.get('defaults', {})
-        if 'defaults' in query:
-            del query['defaults']
-
-        try:
-            doc = self.get(*q_objs, **query)
-            return doc, False
-        except self._document.DoesNotExist:
-            query.update(defaults)
-            doc = self._document(**query)
-
-            if auto_save:
-                doc.save(write_concern=write_concern)
-            return doc, True
 
     def first(self):
         """Retrieve the first object matching the query.
@@ -423,7 +380,7 @@ class BaseQuerySet(object):
         if call_document_delete:
             cnt = 0
             for doc in queryset:
-                doc.delete(write_concern=write_concern)
+                doc.delete(**write_concern)
                 cnt += 1
             return cnt
 
@@ -545,7 +502,7 @@ class BaseQuerySet(object):
 
         :param upsert: insert if document doesn't exist (default ``False``)
         :param full_response: return the entire response object from the
-            server (default ``False``)
+            server (default ``False``, not available for PyMongo 3+)
         :param remove: remove rather than updating (default ``False``)
         :param new: return updated rather than original document
             (default ``False``)
@@ -563,13 +520,31 @@ class BaseQuerySet(object):
 
         queryset = self.clone()
         query = queryset._query
-        update = transform.update(queryset._document, **update)
+        if not IS_PYMONGO_3 or not remove:
+            update = transform.update(queryset._document, **update)
         sort = queryset._ordering
 
         try:
-            result = queryset._collection.find_and_modify(
-                query, update, upsert=upsert, sort=sort, remove=remove, new=new,
-                full_response=full_response, **self._cursor_args)
+            if IS_PYMONGO_3:
+                if full_response:
+                    msg = ("With PyMongo 3+, it is not possible anymore to get the full response.")
+                    warnings.warn(msg, DeprecationWarning)
+                if remove:
+                    result = queryset._collection.find_one_and_delete(
+                        query, sort=sort, **self._cursor_args)
+                else:
+                    if new:
+                        return_doc = ReturnDocument.AFTER
+                    else:
+                        return_doc = ReturnDocument.BEFORE
+                    result = queryset._collection.find_one_and_update(
+                        query, update, upsert=upsert, sort=sort, return_document=return_doc,
+                        **self._cursor_args)
+
+            else:
+                result = queryset._collection.find_and_modify(
+                    query, update, upsert=upsert, sort=sort, remove=remove, new=new,
+                    full_response=full_response, **self._cursor_args)
         except pymongo.errors.DuplicateKeyError, err:
             raise NotUniqueError(u"Update failed (%s)" % err)
         except pymongo.errors.OperationFailure, err:
@@ -907,13 +882,18 @@ class BaseQuerySet(object):
             plan = pprint.pformat(plan)
         return plan
 
+    # DEPRECATED. Has no more impact on PyMongo 3+
     def snapshot(self, enabled):
         """Enable or disable snapshot mode when querying.
 
         :param enabled: whether or not snapshot mode is enabled
 
         ..versionchanged:: 0.5 - made chainable
+        .. deprecated:: Ignored with PyMongo 3+
         """
+        if IS_PYMONGO_3:
+            msg = "snapshot is deprecated as it has no impact when using PyMongo 3+."
+            warnings.warn(msg, DeprecationWarning)
         queryset = self.clone()
         queryset._snapshot = enabled
         return queryset
@@ -929,11 +909,17 @@ class BaseQuerySet(object):
         queryset._timeout = enabled
         return queryset
 
+    # DEPRECATED. Has no more impact on PyMongo 3+
     def slave_okay(self, enabled):
         """Enable or disable the slave_okay when querying.
 
         :param enabled: whether or not the slave_okay is enabled
+
+        .. deprecated:: Ignored with PyMongo 3+
         """
+        if IS_PYMONGO_3:
+            msg = "slave_okay is deprecated as it has no impact when using PyMongo 3+."
+            warnings.warn(msg, DeprecationWarning)
         queryset = self.clone()
         queryset._slave_okay = enabled
         return queryset
@@ -1383,22 +1369,34 @@ class BaseQuerySet(object):
 
     @property
     def _cursor_args(self):
-        cursor_args = {
-            'snapshot': self._snapshot,
-            'timeout': self._timeout
-        }
-        if self._read_preference is not None:
-            cursor_args['read_preference'] = self._read_preference
+        if not IS_PYMONGO_3:
+            fields_name = 'fields'
+            cursor_args = {
+                'timeout': self._timeout,
+                'snapshot': self._snapshot
+            }
+            if self._read_preference is not None:
+                cursor_args['read_preference'] = self._read_preference
+            else:
+                cursor_args['slave_okay'] = self._slave_okay
         else:
-            cursor_args['slave_okay'] = self._slave_okay
+            fields_name = 'projection'
+            # snapshot is not handled at all by PyMongo 3+
+            # TODO: evaluate similar possibilities using modifiers
+            if self._snapshot:
+                msg = "The snapshot option is not anymore available with PyMongo 3+"
+                warnings.warn(msg, DeprecationWarning)
+            cursor_args = {
+                'no_cursor_timeout': self._timeout
+            }
         if self._loaded_fields:
-            cursor_args['fields'] = self._loaded_fields.as_dict()
+            cursor_args[fields_name] = self._loaded_fields.as_dict()
 
         if self._search_text:
-            if 'fields' not in cursor_args:
-                cursor_args['fields'] = {}
+            if fields_name not in cursor_args:
+                cursor_args[fields_name] = {}
 
-            cursor_args['fields']['_text_score'] = {'$meta': "textScore"}
+            cursor_args[fields_name]['_text_score'] = {'$meta': "textScore"}
 
         return cursor_args
 

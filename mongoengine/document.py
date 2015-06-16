@@ -1,11 +1,8 @@
 import warnings
-
-import hashlib
 import pymongo
 import re
 
 from pymongo.read_preferences import ReadPreference
-from bson import ObjectId
 from bson.dbref import DBRef
 from mongoengine import signals
 from mongoengine.common import _import_class
@@ -19,7 +16,8 @@ from mongoengine.base import (
     ALLOW_INHERITANCE,
     get_document
 )
-from mongoengine.errors import ValidationError, InvalidQueryError, InvalidDocumentError
+from mongoengine.errors import InvalidQueryError, InvalidDocumentError
+from mongoengine.python_support import IS_PYMONGO_3
 from mongoengine.queryset import (OperationError, NotUniqueError,
                                   QuerySet, transform)
 from mongoengine.connection import get_db, DEFAULT_CONNECTION_NAME
@@ -135,6 +133,11 @@ class Document(BaseDocument):
     doesn't contain a list) if allow_inheritance is True. This can be
     disabled by either setting cls to False on the specific index or
     by setting index_cls to False on the meta dictionary for the document.
+
+    By default, any extra attribute existing in stored data but not declared
+    in your model will raise a :class:`~mongoengine.FieldDoesNotExist` error.
+    This can be disabled by setting :attr:`strict` to ``False``
+    in the :attr:`meta` dictionnary.
     """
 
     # The __metaclass__ attribute is removed by 2to3 when running with Python3
@@ -142,13 +145,15 @@ class Document(BaseDocument):
     my_metaclass = TopLevelDocumentMetaclass
     __metaclass__ = TopLevelDocumentMetaclass
 
-    __slots__ = ('__objects')
+    __slots__ = ('__objects',)
 
     def pk():
         """Primary key alias
         """
 
         def fget(self):
+            if 'id_field' not in self._meta:
+                return None
             return getattr(self, self._meta['id_field'])
 
         def fset(self, value):
@@ -164,14 +169,15 @@ class Document(BaseDocument):
     @classmethod
     def _get_collection(cls):
         """Returns the collection for the document."""
+        # TODO: use new get_collection() with PyMongo3 ?
         if not hasattr(cls, '_collection') or cls._collection is None:
             db = cls._get_db()
             collection_name = cls._get_collection_name()
             # Create collection as a capped collection if specified
-            if cls._meta['max_size'] or cls._meta['max_documents']:
+            if cls._meta.get('max_size') or cls._meta.get('max_documents'):
                 # Get max document limit and max byte size from meta
-                max_size = cls._meta['max_size'] or 10000000  # 10MB default
-                max_documents = cls._meta['max_documents']
+                max_size = cls._meta.get('max_size') or 10000000  # 10MB default
+                max_documents = cls._meta.get('max_documents')
 
                 if collection_name in db.collection_names():
                     cls._collection = db[collection_name]
@@ -262,7 +268,8 @@ class Document(BaseDocument):
             to cascading saves.  Implies ``cascade=True``.
         :param _refs: A list of processed references used in cascading saves
         :param save_condition: only perform save if matching record in db
-            satisfies condition(s) (e.g., version number)
+            satisfies condition(s) (e.g. version number).
+            Raises :class:`OperationError` if the conditions are not satisfied
 
         .. versionchanged:: 0.5
             In existing documents it only saves changed fields using
@@ -280,6 +287,8 @@ class Document(BaseDocument):
         .. versionchanged:: 0.8.5
             Optional save_condition that only overwrites existing documents
             if the condition is satisfied in the current db record.
+        .. versionchanged:: 0.10
+            :class:`OperationError` exception raised if save_condition fails.
         """
         signals.pre_save.send(self.__class__, document=self)
 
@@ -305,6 +314,13 @@ class Document(BaseDocument):
                     object_id = collection.insert(doc, **write_concern)
                 else:
                     object_id = collection.save(doc, **write_concern)
+                    # In PyMongo 3.0, the save() call calls internally the _update() call
+                    # but they forget to return the _id value passed back, therefore getting it back here
+                    # Correct behaviour in 2.X and in 3.0.1+ versions
+                    if not object_id and pymongo.version_tuple == (3, 0):
+                        pk_as_mongo_obj = self._fields.get(self._meta['id_field']).to_mongo(self.pk)
+                        object_id = self._qs.filter(pk=pk_as_mongo_obj).first() and \
+                                    self._qs.filter(pk=pk_as_mongo_obj).first().pk
             else:
                 object_id = doc['_id']
                 updates, removals = self._delta()
@@ -337,6 +353,9 @@ class Document(BaseDocument):
                     upsert = save_condition is None
                     last_error = collection.update(select_dict, update_query,
                                                    upsert=upsert, **write_concern)
+                    if not upsert and last_error['nModified'] == 0:
+                        raise OperationError('Race condition preventing'
+                                             ' document update detected')
                     created = is_new_object(last_error)
 
             if cascade is None:
@@ -452,6 +471,12 @@ class Document(BaseDocument):
             will force an fsync on the primary server.
         """
         signals.pre_delete.send(self.__class__, document=self)
+
+        # Delete FileFields separately 
+        FileField = _import_class('FileField')
+        for name, field in self._fields.iteritems():
+            if isinstance(field, FileField): 
+                getattr(self, name).delete()
 
         try:
             self._qs.filter(
@@ -620,22 +645,50 @@ class Document(BaseDocument):
         db.drop_collection(cls._get_collection_name())
 
     @classmethod
+    def create_index(cls, keys, background=False, **kwargs):
+        """Creates the given indexes if required.
+
+        :param keys: a single index key or a list of index keys (to
+            construct a multi-field index); keys may be prefixed with a **+**
+            or a **-** to determine the index ordering
+        :param background: Allows index creation in the background
+        """
+        index_spec = cls._build_index_spec(keys)
+        index_spec = index_spec.copy()
+        fields = index_spec.pop('fields')
+        drop_dups = kwargs.get('drop_dups', False)
+        if IS_PYMONGO_3 and drop_dups:
+            msg = "drop_dups is deprecated and is removed when using PyMongo 3+."
+            warnings.warn(msg, DeprecationWarning)
+        elif not IS_PYMONGO_3:
+            index_spec['drop_dups'] = drop_dups
+        index_spec['background'] = background
+        index_spec.update(kwargs)
+
+        if IS_PYMONGO_3:
+            return cls._get_collection().create_index(fields, **index_spec)
+        else:
+            return cls._get_collection().ensure_index(fields, **index_spec)
+
+    @classmethod
     def ensure_index(cls, key_or_list, drop_dups=False, background=False,
                      **kwargs):
-        """Ensure that the given indexes are in place.
+        """Ensure that the given indexes are in place. Deprecated in favour
+        of create_index.
 
         :param key_or_list: a single index key or a list of index keys (to
             construct a multi-field index); keys may be prefixed with a **+**
             or a **-** to determine the index ordering
+        :param background: Allows index creation in the background
+        :param drop_dups: Was removed/ignored with MongoDB >2.7.5. The value
+            will be removed if PyMongo3+ is used
         """
-        index_spec = cls._build_index_spec(key_or_list)
-        index_spec = index_spec.copy()
-        fields = index_spec.pop('fields')
-        index_spec['drop_dups'] = drop_dups
-        index_spec['background'] = background
-        index_spec.update(kwargs)
-
-        return cls._get_collection().ensure_index(fields, **index_spec)
+        if IS_PYMONGO_3 and drop_dups:
+            msg = "drop_dups is deprecated and is removed when using PyMongo 3+."
+            warnings.warn(msg, DeprecationWarning)
+        elif not IS_PYMONGO_3:
+            kwargs.update({'drop_dups': drop_dups})
+        return cls.create_index(key_or_list, background=background, **kwargs)
 
     @classmethod
     def ensure_indexes(cls):
@@ -650,6 +703,9 @@ class Document(BaseDocument):
         drop_dups = cls._meta.get('index_drop_dups', False)
         index_opts = cls._meta.get('index_opts') or {}
         index_cls = cls._meta.get('index_cls', True)
+        if IS_PYMONGO_3 and drop_dups:
+            msg = "drop_dups is deprecated and is removed when using PyMongo 3+."
+            warnings.warn(msg, DeprecationWarning)
 
         collection = cls._get_collection()
         # 746: when connection is via mongos, the read preference is not necessarily an indication that
@@ -672,15 +728,34 @@ class Document(BaseDocument):
                 cls_indexed = cls_indexed or includes_cls(fields)
                 opts = index_opts.copy()
                 opts.update(spec)
-                collection.ensure_index(fields, background=background,
-                                        drop_dups=drop_dups, **opts)
+
+                # we shouldn't pass 'cls' to the collection.ensureIndex options
+                # because of https://jira.mongodb.org/browse/SERVER-769
+                if 'cls' in opts:
+                    del opts['cls']
+
+                if IS_PYMONGO_3:
+                    collection.create_index(fields, background=background, **opts)
+                else:
+                    collection.ensure_index(fields, background=background,
+                                            drop_dups=drop_dups, **opts)
 
         # If _cls is being used (for polymorphism), it needs an index,
         # only if another index doesn't begin with _cls
         if (index_cls and not cls_indexed and
                 cls._meta.get('allow_inheritance', ALLOW_INHERITANCE) is True):
-            collection.ensure_index('_cls', background=background,
-                                    **index_opts)
+
+            # we shouldn't pass 'cls' to the collection.ensureIndex options
+            # because of https://jira.mongodb.org/browse/SERVER-769
+            if 'cls' in index_opts:
+                del index_opts['cls']
+
+            if IS_PYMONGO_3:
+                collection.create_index('_cls', background=background,
+                                        **index_opts)
+            else:
+                collection.ensure_index('_cls', background=background,
+                                        **index_opts)
 
     @classmethod
     def list_indexes(cls, go_up=True, go_down=True):

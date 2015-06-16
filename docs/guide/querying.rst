@@ -39,6 +39,14 @@ syntax::
     # been written by a user whose 'country' field is set to 'uk'
     uk_pages = Page.objects(author__country='uk')
 
+.. note::
+
+   (version **0.9.1+**) if your field name is like mongodb operator name (for example
+   type, lte, lt...) and you want to place it at the end of lookup keyword
+   mongoengine automatically  prepend $ to it. To avoid this use  __ at the end of
+   your lookup keyword. For example if your field name is ``type`` and you want to
+   query by this field you must use ``.objects(user__type__="admin")`` instead of
+   ``.objects(user__type="admin")``
 
 Query operators
 ===============
@@ -255,21 +263,11 @@ no document matches the query, and
 if more than one document matched the query.  These exceptions are merged into
 your document definitions eg: `MyDoc.DoesNotExist`
 
-A variation of this method exists,
-:meth:`~mongoengine.queryset.QuerySet.get_or_create`, that will create a new
-document with the query arguments if no documents match the query. An
-additional keyword argument, :attr:`defaults` may be provided, which will be
-used as default values for the new document, in the case that it should need
-to be created::
-
-    >>> a, created = User.objects.get_or_create(name='User A', defaults={'age': 30})
-    >>> b, created = User.objects.get_or_create(name='User A', defaults={'age': 40})
-    >>> a.name == b.name and a.age == b.age
-    True
-
-.. warning::
-    :meth:`~mongoengine.queryset.QuerySet.get_or_create` method is deprecated
-    since :mod:`mongoengine` 0.8.
+A variation of this method, get_or_create() existed, but it was unsafe. It
+could not be made safe, because there are no transactions in mongoDB. Other
+approaches should be investigated, to ensure you don't accidentally duplicate
+data when using something similar to this method. Therefore it was deprecated
+in 0.8 and removed in 0.10.
 
 Default Document queries
 ========================
@@ -663,4 +661,3 @@ following example shows how the substitutions are made::
         return comments;
     }
     """)
-

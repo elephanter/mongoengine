@@ -3,9 +3,10 @@ from collections import defaultdict
 import pymongo
 from bson import SON
 
+from mongoengine.base.fields import UPDATE_OPERATORS
 from mongoengine.connection import get_connection
 from mongoengine.common import _import_class
-from mongoengine.errors import InvalidQueryError, LookUpError
+from mongoengine.errors import InvalidQueryError
 
 __all__ = ('query', 'update')
 
@@ -23,10 +24,6 @@ STRING_OPERATORS = ('contains', 'icontains', 'startswith',
 CUSTOM_OPERATORS = ('match',)
 MATCH_OPERATORS = (COMPARISON_OPERATORS + GEO_OPERATORS +
                    STRING_OPERATORS + CUSTOM_OPERATORS)
-
-UPDATE_OPERATORS = ('set', 'unset', 'inc', 'dec', 'pop', 'push',
-                    'push_all', 'pull', 'pull_all', 'add_to_set',
-                    'set_on_insert', 'min', 'max')
 
 
 def query(_doc_cls=None, _field_operation=False, **query):
@@ -47,7 +44,8 @@ def query(_doc_cls=None, _field_operation=False, **query):
         if len(parts) > 1 and parts[-1] in MATCH_OPERATORS:
             op = parts.pop()
 
-        if len(parts) > 1 and not parts[-1]:
+        # if user escape field name by __
+        if len(parts) > 1 and parts[-1] == "":
             parts.pop()
 
         negate = False
@@ -130,20 +128,15 @@ def query(_doc_cls=None, _field_operation=False, **query):
                 mongo_query[key].update(value)
                 # $maxDistance needs to come last - convert to SON
                 value_dict = mongo_query[key]
-                if ('$maxDistance' in value_dict and '$near' in value_dict):
+                if '$maxDistance' in value_dict and '$near' in value_dict:
                     value_son = SON()
                     if isinstance(value_dict['$near'], dict):
                         for k, v in value_dict.iteritems():
                             if k == '$maxDistance':
                                 continue
                             value_son[k] = v
-                        if (get_connection().max_wire_version <= 1):
-                            value_son['$maxDistance'] = value_dict[
-                                '$maxDistance']
-                        else:
-                            value_son['$near'] = SON(value_son['$near'])
-                            value_son['$near'][
-                                '$maxDistance'] = value_dict['$maxDistance']
+                        value_son['$near'] = SON(value_son['$near'])
+                        value_son['$near']['$maxDistance'] = value_dict['$maxDistance']
                     else:
                         for k, v in value_dict.iteritems():
                             if k == '$maxDistance':

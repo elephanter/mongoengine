@@ -1,13 +1,11 @@
 import warnings
 
-import pymongo
-
 from mongoengine.common import _import_class
 from mongoengine.errors import InvalidDocumentError
 from mongoengine.python_support import PY3
 from mongoengine.queryset import (DO_NOTHING, DoesNotExist,
                                   MultipleObjectsReturned,
-                                  QuerySet, QuerySetManager)
+                                  QuerySetManager)
 
 from mongoengine.base.common import _document_registry, ALLOW_INHERITANCE
 from mongoengine.base.fields import BaseField, ComplexBaseField, ObjectIdField
@@ -176,7 +174,8 @@ class DocumentMetaclass(type):
         # Handle delete rules
         for field in new_class._fields.itervalues():
             f = field
-            f.owner_document = new_class
+            if f.owner_document is None:
+                f.owner_document = new_class
             delete_rule = getattr(f, 'reverse_delete_rule', DO_NOTHING)
             if isinstance(f, CachedReferenceField):
 
@@ -386,15 +385,17 @@ class TopLevelDocumentMetaclass(DocumentMetaclass):
         new_class._auto_id_field = getattr(parent_doc_cls,
                                            '_auto_id_field', False)
         if not new_class._meta.get('id_field'):
+            # After 0.10, find not existing names, instead of overwriting
+            id_name, id_db_name = cls.get_auto_id_names(new_class)
             new_class._auto_id_field = True
-            new_class._meta['id_field'] = 'id'
-            new_class._fields['id'] = ObjectIdField(db_field='_id')
-            new_class._fields['id'].name = 'id'
-            new_class.id = new_class._fields['id']
-
-        # Prepend id field to _fields_ordered
-        if 'id' in new_class._fields and 'id' not in new_class._fields_ordered:
-            new_class._fields_ordered = ('id', ) + new_class._fields_ordered
+            new_class._meta['id_field'] = id_name
+            new_class._fields[id_name] = ObjectIdField(db_field=id_db_name)
+            new_class._fields[id_name].name = id_name
+            new_class.id = new_class._fields[id_name]
+            new_class._db_field_map[id_name] = id_db_name
+            new_class._reverse_db_field_map[id_db_name] = id_name
+            # Prepend id field to _fields_ordered
+            new_class._fields_ordered = (id_name, ) + new_class._fields_ordered
 
         # Merge in exceptions with parent hierarchy
         exceptions_to_merge = (DoesNotExist, MultipleObjectsReturned)
@@ -408,6 +409,19 @@ class TopLevelDocumentMetaclass(DocumentMetaclass):
             setattr(new_class, name, exception)
 
         return new_class
+
+    def get_auto_id_names(self):
+        id_name, id_db_name = ('id', '_id')
+        if id_name not in self._fields and \
+                id_db_name not in (v.db_field for v in self._fields.values()):
+            return id_name, id_db_name
+        id_basename, id_db_basename, i = 'auto_id', '_auto_id', 0
+        while id_name in self._fields or \
+                id_db_name in (v.db_field for v in self._fields.values()):
+            id_name = '{0}_{1}'.format(id_basename, i)
+            id_db_name = '{0}_{1}'.format(id_db_basename, i)
+            i += 1
+        return id_name, id_db_name
 
 
 class MetaDict(dict):

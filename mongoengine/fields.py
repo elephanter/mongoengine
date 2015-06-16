@@ -108,7 +108,7 @@ class StringField(BaseField):
             # escape unsafe characters which could lead to a re.error
             value = re.escape(value)
             value = re.compile(regex % value, flags)
-        return value
+        return super(StringField, self).prepare_query_value(op, value)
 
 
 class URLField(StringField):
@@ -119,22 +119,31 @@ class URLField(StringField):
     """
 
     _URL_REGEX = re.compile(
-        r'^(?:http|ftp)s?://'  # http:// or https://
-        # domain...
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'
+        r'^(?:[a-z0-9\.\-]*)://'  # scheme is validated separately
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}(?<!-)\.?)|'  # domain...
         r'localhost|'  # localhost...
-        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|'  # ...or ipv4
+        r'\[?[A-F0-9]*:[A-F0-9:]+\]?)'  # ...or ipv6
         r'(?::\d+)?'  # optional port
         r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+    _URL_SCHEMES = ['http', 'https', 'ftp', 'ftps']
 
-    def __init__(self, verify_exists=False, url_regex=None, **kwargs):
+    def __init__(self, verify_exists=False, url_regex=None, schemes=None, **kwargs):
         self.verify_exists = verify_exists
         self.url_regex = url_regex or self._URL_REGEX
+        self.schemes = schemes or self._URL_SCHEMES
         super(URLField, self).__init__(**kwargs)
 
     def validate(self, value):
+        # Check first if the scheme is valid
+        scheme = value.split('://')[0].lower()
+        if scheme not in self.schemes:
+            self.error('Invalid scheme {} in URL: {}'.format(scheme, value))
+            return
+
+        # Then check full URL
         if not self.url_regex.match(value):
-            self.error('Invalid URL: %s' % value)
+            self.error('Invalid URL: {}'.format(value))
             return
 
         if self.verify_exists:
@@ -162,7 +171,7 @@ class EmailField(StringField):
         # quoted-string
         r'|^"([\001-\010\013\014\016-\037!#-\[\]-\177]|\\[\001-011\013\014\016-\177])*"'
         # domain (max length of an ICAAN TLD is 22 characters)
-        r')@(?:[A-Z0-9](?:[A-Z0-9-]{0,253}[A-Z0-9])?\.)+[A-Z]{2,22}$', re.IGNORECASE
+        r')@(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}|[A-Z0-9-]{2,}(?<!-))$', re.IGNORECASE
     )
 
     def validate(self, value):
@@ -203,7 +212,7 @@ class IntField(BaseField):
         if value is None:
             return value
 
-        return int(value)
+        return super(IntField, self).prepare_query_value(op, int(value))
 
 
 class LongField(BaseField):
@@ -238,7 +247,7 @@ class LongField(BaseField):
         if value is None:
             return value
 
-        return long(value)
+        return super(LongField, self).prepare_query_value(op, long(value))
 
 
 class FloatField(BaseField):
@@ -273,7 +282,7 @@ class FloatField(BaseField):
         if value is None:
             return value
 
-        return float(value)
+        return super(FloatField, self).prepare_query_value(op, float(value))
 
 
 class DecimalField(BaseField):
@@ -347,7 +356,7 @@ class DecimalField(BaseField):
             self.error('Decimal value is too large')
 
     def prepare_query_value(self, op, value):
-        return self.to_mongo(value)
+        return super(DecimalField, self).prepare_query_value(op, self.to_mongo(value))
 
 
 class BooleanField(BaseField):
@@ -434,7 +443,7 @@ class DateTimeField(BaseField):
                     return None
 
     def prepare_query_value(self, op, value):
-        return self.to_mongo(value)
+        return super(DateTimeField, self).prepare_query_value(op, self.to_mongo(value))
 
 
 class ComplexDateTimeField(StringField):
@@ -458,22 +467,10 @@ class ComplexDateTimeField(StringField):
     """
 
     def __init__(self, separator=',', **kwargs):
-        self.names = ['year', 'month', 'day', 'hour', 'minute', 'second',
-                      'microsecond']
-        self.separtor = separator
+        self.names = ['year', 'month', 'day', 'hour', 'minute', 'second', 'microsecond']
+        self.separator = separator
+        self.format = separator.join(['%Y', '%m', '%d', '%H', '%M', '%S', '%f'])
         super(ComplexDateTimeField, self).__init__(**kwargs)
-
-    def _leading_zero(self, number):
-        """
-        Converts the given number to a string.
-
-        If it has only one digit, a leading zero so as it has always at least
-        two digits.
-        """
-        if int(number) < 10:
-            return "0%s" % number
-        else:
-            return str(number)
 
     def _convert_from_datetime(self, val):
         """
@@ -481,14 +478,11 @@ class ComplexDateTimeField(StringField):
         stored in MongoDB). This is the reverse function of
         `_convert_from_string`.
 
-        >>> a = datetime(2011, 6, 8, 20, 26, 24, 192284)
-        >>> RealDateTimeField()._convert_from_datetime(a)
-        '2011,06,08,20,26,24,192284'
+        >>> a = datetime(2011, 6, 8, 20, 26, 24, 92284)
+        >>> ComplexDateTimeField()._convert_from_datetime(a)
+        '2011,06,08,20,26,24,092284'
         """
-        data = []
-        for name in self.names:
-            data.append(self._leading_zero(getattr(val, name)))
-        return ','.join(data)
+        return val.strftime(self.format)
 
     def _convert_from_string(self, data):
         """
@@ -496,16 +490,12 @@ class ComplexDateTimeField(StringField):
         will manipulate). This is the reverse function of
         `_convert_from_datetime`.
 
-        >>> a = '2011,06,08,20,26,24,192284'
+        >>> a = '2011,06,08,20,26,24,092284'
         >>> ComplexDateTimeField()._convert_from_string(a)
-        datetime.datetime(2011, 6, 8, 20, 26, 24, 192284)
+        datetime.datetime(2011, 6, 8, 20, 26, 24, 92284)
         """
-        data = data.split(',')
-        data = map(int, data)
-        values = {}
-        for i in range(7):
-            values[self.names[i]] = data[i]
-        return datetime.datetime(**values)
+        values = map(int, data.split(self.separator))
+        return datetime.datetime(*values)
 
     def __get__(self, instance, owner):
         data = super(ComplexDateTimeField, self).__get__(instance, owner)
@@ -537,7 +527,7 @@ class ComplexDateTimeField(StringField):
         return self._convert_from_datetime(value)
 
     def prepare_query_value(self, op, value):
-        return self._convert_from_datetime(value)
+        return super(ComplexDateTimeField, self).prepare_query_value(op, self._convert_from_datetime(value))
 
 
 class EmbeddedDocumentField(BaseField):
@@ -565,7 +555,7 @@ class EmbeddedDocumentField(BaseField):
 
     def to_python(self, value):
         if not isinstance(value, self.document_type):
-            return self.document_type._from_son(value)
+            return self.document_type._from_son(value, _auto_dereference=self._auto_dereference)
         return value
 
     def to_mongo(self, value, use_db_field=True, fields=[]):
@@ -588,6 +578,9 @@ class EmbeddedDocumentField(BaseField):
         return self.document_type._fields.get(member_name)
 
     def prepare_query_value(self, op, value):
+        if not isinstance(value, self.document_type):
+            value = self.document_type._from_son(value)
+        super(EmbeddedDocumentField, self).prepare_query_value(op, value)
         return self.to_mongo(value)
 
 
@@ -604,7 +597,7 @@ class GenericEmbeddedDocumentField(BaseField):
     """
 
     def prepare_query_value(self, op, value):
-        return self.to_mongo(value)
+        return super(GenericEmbeddedDocumentField, self).prepare_query_value(op, self.to_mongo(value))
 
     def to_python(self, value):
         if isinstance(value, dict):
@@ -625,7 +618,7 @@ class GenericEmbeddedDocumentField(BaseField):
             return None
 
         data = document.to_mongo(use_db_field)
-        if not '_cls' in data:
+        if '_cls' not in data:
             data['_cls'] = document._class_name
         return data
 
@@ -687,7 +680,8 @@ class DynamicField(BaseField):
         if isinstance(value, basestring):
             from mongoengine.fields import StringField
             return StringField().prepare_query_value(op, value)
-        return self.to_mongo(value)
+        return super(DynamicField, self).prepare_query_value(op, self.to_mongo(value))
+
 
     def validate(self, value, clean=True):
         if hasattr(value, "validate"):
@@ -998,7 +992,9 @@ class ReferenceField(BaseField):
     def prepare_query_value(self, op, value):
         if value is None:
             return None
+        super(ReferenceField, self).prepare_query_value(op, value)
         return self.to_mongo(value)
+
 
     def validate(self, value):
 
@@ -1016,7 +1012,8 @@ class ReferenceField(BaseField):
 class CachedReferenceField(BaseField):
 
     """
-    A referencefield with cache fields to porpuse pseudo-joins
+    A referencefield with cache fields to purpose pseudo-joins
+    
     .. versionadded:: 0.9
     """
 
@@ -1687,12 +1684,21 @@ class SequenceField(BaseField):
              cluster of machines, it is easier to create an object ID than have
              global, uniformly increasing sequence numbers.
 
+    :param collection_name:  Name of the counter collection (default 'mongoengine.counters')
+    :param sequence_name: Name of the sequence in the collection (default 'ClassName.counter')
+    :param value_decorator: Any callable to use as a counter (default int)
+        
     Use any callable as `value_decorator` to transform calculated counter into
     any value suitable for your needs, e.g. string or hexadecimal
     representation of the default integer counter value.
-
+    
+    .. note::
+    
+        In case the counter is defined in the abstract document, it will be 
+        common to all inherited documents and the default sequence name will 
+        be the class name of the abstract document.
+    
     .. versionadded:: 0.5
-
     .. versionchanged:: 0.8 added `value_decorator`
     """
 
@@ -1707,7 +1713,7 @@ class SequenceField(BaseField):
         self.sequence_name = sequence_name
         self.value_decorator = (callable(value_decorator) and
                                 value_decorator or self.VALUE_DECORATOR)
-        return super(SequenceField, self).__init__(*args, **kwargs)
+        super(SequenceField, self).__init__(*args, **kwargs)
 
     def generate(self):
         """
@@ -1753,7 +1759,7 @@ class SequenceField(BaseField):
         if self.sequence_name:
             return self.sequence_name
         owner = self.owner_document
-        if issubclass(owner, Document):
+        if issubclass(owner, Document) and not owner._meta.get('abstract'):
             return owner._get_collection_name()
         else:
             return ''.join('_%s' % c if c.isupper() else c

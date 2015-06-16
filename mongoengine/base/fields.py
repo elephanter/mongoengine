@@ -17,6 +17,11 @@ __all__ = ("BaseField", "ComplexBaseField",
            "ObjectIdField", "GeoJsonBaseField")
 
 
+UPDATE_OPERATORS = set(['set', 'unset', 'inc', 'dec', 'pop', 'push',
+                        'push_all', 'pull', 'pull_all', 'add_to_set',
+                        'set_on_insert', 'min', 'max'])
+
+
 class BaseField(object):
 
     """A base class for fields in a MongoDB document. Instances of this class
@@ -83,6 +88,7 @@ class BaseField(object):
         self.help_text = help_text
         self.null = null
         self.sparse = sparse
+        self._owner_document = None
 
         # Adjust the appropriate creation counter, and save our local copy.
         if self.db_field == '_id':
@@ -150,6 +156,8 @@ class BaseField(object):
     def prepare_query_value(self, op, value):
         """Prepare a value that is being used in a query for PyMongo.
         """
+        if op in UPDATE_OPERATORS:
+            self.validate(value)
         return value
 
     def validate(self, value, clean=True):
@@ -188,6 +196,17 @@ class BaseField(object):
                                  'callable.' % self.name)
 
         self.validate(value, **kwargs)
+
+    @property
+    def owner_document(self):
+        return self._owner_document
+
+    def _set_owner_document(self, owner_document):
+        self._owner_document = owner_document
+
+    @owner_document.setter
+    def owner_document(self, owner_document):
+        self._set_owner_document(owner_document)
 
 
 class ComplexBaseField(BaseField):
@@ -271,6 +290,7 @@ class ComplexBaseField(BaseField):
                 return value
 
         if self.field:
+            self.field._auto_dereference = self._auto_dereference
             value_dict = dict([(key, self.field.to_python(item))
                                for key, item in value.items()])
         else:
@@ -398,11 +418,6 @@ class ComplexBaseField(BaseField):
             self.field.owner_document = owner_document
         self._owner_document = owner_document
 
-    def _get_owner_document(self, owner_document):
-        self._owner_document = owner_document
-
-    owner_document = property(_get_owner_document, _set_owner_document)
-
 
 class ObjectIdField(BaseField):
 
@@ -410,8 +425,11 @@ class ObjectIdField(BaseField):
     """
 
     def to_python(self, value):
-        if not isinstance(value, ObjectId):
-            value = ObjectId(value)
+        try:
+            if not isinstance(value, ObjectId):
+                value = ObjectId(value)
+        except:
+            pass
         return value
 
     def to_mongo(self, value):

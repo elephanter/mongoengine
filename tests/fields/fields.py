@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
 import sys
+from nose.plugins.skip import SkipTest
+
 sys.path[0:0] = [""]
 
 import datetime
 import unittest
 import uuid
+import math
+import itertools
+import re
 
 try:
     import dateutil
@@ -34,6 +39,7 @@ class FieldTest(unittest.TestCase):
     def tearDown(self):
         self.db.drop_collection('fs.files')
         self.db.drop_collection('fs.chunks')
+        self.db.drop_collection('mongoengine.counters')
 
     def test_default_values_nothing_set(self):
         """Ensure that default field values are used when creating a document.
@@ -335,6 +341,23 @@ class FieldTest(unittest.TestCase):
 
         link.url = 'http://www.google.com:8080'
         link.validate()
+
+    def test_url_scheme_validation(self):
+        """Ensure that URLFields validate urls with specific schemes properly.
+        """
+        class Link(Document):
+            url = URLField()
+
+        class SchemeLink(Document):
+            url = URLField(schemes=['ws', 'irc'])
+
+        link = Link()
+        link.url = 'ws://google.com'
+        self.assertRaises(ValidationError, link.validate)
+
+        scheme_link = SchemeLink()
+        scheme_link.url = 'ws://google.com'
+        scheme_link.validate()
 
     def test_int_validation(self):
         """Ensure that invalid values cannot be assigned to int fields.
@@ -689,6 +712,7 @@ class FieldTest(unittest.TestCase):
         """
         class LogEntry(Document):
             date = ComplexDateTimeField()
+            date_with_dots = ComplexDateTimeField(separator='.')
 
         LogEntry.drop_collection()
 
@@ -728,6 +752,18 @@ class FieldTest(unittest.TestCase):
             self.assertEqual(log.date, d1)
             log1 = LogEntry.objects.get(date=d1)
             self.assertEqual(log, log1)
+
+        # Test string padding
+        microsecond = map(int, [math.pow(10, x) for x in xrange(6)])
+        mm = dd = hh = ii = ss = [1, 10]
+
+        for values in itertools.product([2014], mm, dd, hh, ii, ss, microsecond):
+            stored = LogEntry(date=datetime.datetime(*values)).to_mongo()['date']
+            self.assertTrue(re.match('^\d{4},\d{2},\d{2},\d{2},\d{2},\d{2},\d{6}$', stored) is not None)
+
+        # Test separator
+        stored = LogEntry(date_with_dots=datetime.datetime(2014, 1, 1)).to_mongo()['date_with_dots']
+        self.assertTrue(re.match('^\d{4}.\d{2}.\d{2}.\d{2}.\d{2}.\d{2}.\d{6}$', stored) is not None)
 
         LogEntry.drop_collection()
 
@@ -784,6 +820,25 @@ class FieldTest(unittest.TestCase):
             date__gte=datetime.datetime(2000, 1, 1),
         )
         self.assertEqual(logs.count(), 10)
+
+        LogEntry.drop_collection()
+
+        # Test microsecond-level ordering/filtering
+        for microsecond in (99, 999, 9999, 10000):
+            LogEntry(date=datetime.datetime(2015, 1, 1, 0, 0, 0, microsecond)).save()
+
+        logs = list(LogEntry.objects.order_by('date'))
+        for next_idx, log in enumerate(logs[:-1], start=1):
+            next_log = logs[next_idx]
+            self.assertTrue(log.date < next_log.date)
+
+        logs = list(LogEntry.objects.order_by('-date'))
+        for next_idx, log in enumerate(logs[:-1], start=1):
+            next_log = logs[next_idx]
+            self.assertTrue(log.date > next_log.date)
+
+        logs = LogEntry.objects.filter(date__lte=datetime.datetime(2015, 1, 1, 0, 0, 0, 10000))
+        self.assertEqual(logs.count(), 4)
 
         LogEntry.drop_collection()
 
@@ -881,6 +936,13 @@ class FieldTest(unittest.TestCase):
         self.assertEqual(post.comments[0].content, comment2.content)
         self.assertEqual(post.comments[1].content, comment1.content)
 
+        post.comments[0].order = 2
+        post.save()
+        post.reload()
+
+        self.assertEqual(post.comments[0].content, comment1.content)
+        self.assertEqual(post.comments[1].content, comment2.content)
+
         BlogPost.drop_collection()
 
     def test_reverse_list_sorting(self):
@@ -959,6 +1021,23 @@ class FieldTest(unittest.TestCase):
         post.save()
         self.assertEqual(BlogPost.objects(info=['1', '2', '3', '4', '1', '2', '3', '4']).count(), 1)
         BlogPost.drop_collection()
+
+    def test_list_field_delta(self):
+        class Emba(EmbeddedDocument):
+            name = StringField()
+        class TestDocument(Document):
+            list_fld = ListField(EmbeddedDocumentField(Emba))
+
+        TestDocument.drop_collection()
+
+        TestDocument(list_fld=[Emba(name="hello")]).save()
+
+        td = TestDocument.objects().first()
+        td.list_fld.extend([None])
+        td.list_fld[1] = Emba(name="world")
+        td.save()
+
+        self.assertEqual(2, len(TestDocument.objects().first().list_fld))
 
     def test_list_field_passed_in_value(self):
         class Foo(Document):
@@ -1396,15 +1475,25 @@ class FieldTest(unittest.TestCase):
     def test_map_field_lookup(self):
         """Ensure MapField lookups succeed on Fields without a lookup method"""
 
+        class Action(EmbeddedDocument):
+            operation = StringField()
+            object    = StringField()
+
         class Log(Document):
             name = StringField()
             visited = MapField(DateTimeField())
+            actions = MapField(EmbeddedDocumentField(Action))
 
         Log.drop_collection()
-        Log(name="wilson", visited={'friends': datetime.datetime.now()}).save()
+        Log(name="wilson", visited={'friends': datetime.datetime.now()},
+            actions={'friends': Action(operation='drink', object='beer')}).save()
 
         self.assertEqual(1, Log.objects(
             visited__friends__exists=True).count())
+
+        self.assertEqual(1, Log.objects(
+            actions__friends__operation='drink',
+            actions__friends__object='beer').count())
 
     def test_embedded_db_field(self):
 
@@ -2080,9 +2169,7 @@ class FieldTest(unittest.TestCase):
         obj = Product.objects(company=None).first()
         self.assertEqual(obj, me)
 
-        obj, created = Product.objects.get_or_create(company=None)
-
-        self.assertEqual(created, False)
+        obj = Product.objects.get(company=None)
         self.assertEqual(obj, me)
 
     def test_reference_query_conversion(self):
@@ -2436,10 +2523,29 @@ class FieldTest(unittest.TestCase):
             id = BinaryField(primary_key=True)
 
         Attachment.drop_collection()
-
-        att = Attachment(id=uuid.uuid4().bytes).save()
+        binary_id = uuid.uuid4().bytes
+        att = Attachment(id=binary_id).save()
+        self.assertEqual(1, Attachment.objects.count())
+        self.assertEqual(1, Attachment.objects.filter(id=att.id).count())
+        # TODO use assertIsNotNone once Python 2.6 support is dropped
+        self.assertTrue(Attachment.objects.filter(id=att.id).first() is not None)
         att.delete()
+        self.assertEqual(0, Attachment.objects.count())
 
+    def test_binary_field_primary_filter_by_binary_pk_as_str(self):
+
+        raise SkipTest("Querying by id as string is not currently supported")
+
+        class Attachment(Document):
+            id = BinaryField(primary_key=True)
+
+        Attachment.drop_collection()
+        binary_id = uuid.uuid4().bytes
+        att = Attachment(id=binary_id).save()
+        self.assertEqual(1, Attachment.objects.filter(id=binary_id).count())
+        # TODO use assertIsNotNone once Python 2.6 support is dropped
+        self.assertTrue(Attachment.objects.filter(id=binary_id).first() is not None)
+        att.delete()
         self.assertEqual(0, Attachment.objects.count())
 
     def test_choices_validation(self):
@@ -2881,6 +2987,57 @@ class FieldTest(unittest.TestCase):
         self.assertEqual(1, post.comments[0].id)
         self.assertEqual(2, post.comments[1].id)
 
+    def test_inherited_sequencefield(self):
+        class Base(Document):
+            name = StringField()
+            counter = SequenceField()
+            meta = {'abstract': True}
+
+        class Foo(Base):
+            pass
+
+        class Bar(Base):
+            pass
+
+        bar = Bar(name='Bar')
+        bar.save()
+
+        foo = Foo(name='Foo')
+        foo.save()
+
+        self.assertTrue('base.counter' in
+                        self.db['mongoengine.counters'].find().distinct('_id'))
+        self.assertFalse(('foo.counter' or 'bar.counter') in
+                         self.db['mongoengine.counters'].find().distinct('_id'))
+        self.assertNotEqual(foo.counter, bar.counter)
+        self.assertEqual(foo._fields['counter'].owner_document, Base)
+        self.assertEqual(bar._fields['counter'].owner_document, Base)
+
+    def test_no_inherited_sequencefield(self):
+        class Base(Document):
+            name = StringField()
+            meta = {'abstract': True}
+
+        class Foo(Base):
+            counter = SequenceField()
+
+        class Bar(Base):
+            counter = SequenceField()
+
+        bar = Bar(name='Bar')
+        bar.save()
+
+        foo = Foo(name='Foo')
+        foo.save()
+
+        self.assertFalse('base.counter' in
+                         self.db['mongoengine.counters'].find().distinct('_id'))
+        self.assertTrue(('foo.counter' and 'bar.counter') in
+                         self.db['mongoengine.counters'].find().distinct('_id'))
+        self.assertEqual(foo.counter, bar.counter)
+        self.assertEqual(foo._fields['counter'].owner_document, Foo)
+        self.assertEqual(bar._fields['counter'].owner_document, Bar)
+
     def test_generic_embedded_document(self):
         class Car(EmbeddedDocument):
             name = StringField()
@@ -3015,7 +3172,6 @@ class FieldTest(unittest.TestCase):
         self.assertTrue(user.validate() is None)
 
         user = User(email=("Kofq@rhom0e4klgauOhpbpNdogawnyIKvQS0wk2mjqrgGQ5S"
-                           "ucictfqpdkK9iS1zeFw8sg7s7cwAF7suIfUfeyueLpfosjn3"
                            "aJIazqqWkm7.net"))
         self.assertTrue(user.validate() is None)
 
@@ -3160,11 +3316,26 @@ class FieldTest(unittest.TestCase):
 
     def test_undefined_field_exception(self):
         """Tests if a `FieldDoesNotExist` exception is raised when trying to
-        set a value to a field that's not defined.
+        instanciate a document with a field that's not defined.
         """
 
         class Doc(Document):
             foo = StringField(db_field='f')
+
+        def test():
+            Doc(bar='test')
+
+        self.assertRaises(FieldDoesNotExist, test)
+
+    def test_undefined_field_exception_with_strict(self):
+        """Tests if a `FieldDoesNotExist` exception is raised when trying to
+        instanciate a document with a field that's not defined,
+        even when strict is set to False.
+        """
+
+        class Doc(Document):
+            foo = StringField(db_field='f')
+            meta = {'strict': False}
 
         def test():
             Doc(bar='test')
@@ -3607,6 +3778,31 @@ class EmbeddedDocumentListFieldTestCase(unittest.TestCase):
         # Ensure that the delete method returned 2 as the number of entries
         # deleted from the database
         self.assertEqual(number, 2)
+
+    def test_empty_list_embedded_documents_with_unique_field(self):
+        """
+        Tests that only one document with an empty list of embedded documents
+        that have a unique field can be saved, but if the unique field is
+        also sparse than multiple documents with an empty list can be saved.
+        """
+        class EmbeddedWithUnique(EmbeddedDocument):
+            number = IntField(unique=True)
+
+        class A(Document):
+            my_list = ListField(EmbeddedDocumentField(EmbeddedWithUnique))
+
+        a1 = A(my_list=[]).save()
+        self.assertRaises(NotUniqueError, lambda: A(my_list=[]).save())
+
+        class EmbeddedWithSparseUnique(EmbeddedDocument):
+            number = IntField(unique=True, sparse=True)
+
+        class B(Document):
+            my_list = ListField(EmbeddedDocumentField(EmbeddedWithSparseUnique))
+
+        b1 = B(my_list=[]).save()
+        b2 = B(my_list=[]).save()
+
 
     def test_filtered_delete(self):
         """
