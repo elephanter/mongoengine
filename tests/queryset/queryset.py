@@ -5013,7 +5013,22 @@ class QuerySetTest(unittest.TestCase):
         self.assertEquals(Animal.objects(folded_ears=True).count(), 1)
         self.assertEquals(Animal.objects(whiskers_length=5.1).count(), 1)
 
-    def test_loop_over_invalid_id_does_not_crash(self):
+    def test_last_field_name_like_operator(self):
+        class EmbeddedItem(EmbeddedDocument):
+            type = StringField()
+
+        class Doc(Document):
+            item = EmbeddedDocumentField(EmbeddedItem)
+
+        Doc.drop_collection()
+
+        doc = Doc(item=EmbeddedItem(type="axe"))
+        doc.save()
+
+        self.assertEqual(1, Doc.objects(item__type__="axe").count())
+
+
+    def test_loop_via_invalid_id_does_not_crash(self):
         class Person(Document):
             name = StringField()
 

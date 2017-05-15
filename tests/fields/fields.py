@@ -1386,6 +1386,23 @@ class FieldTest(MongoDBTestCase):
         post.reload()
         self.assertEqual(post.info, [1, 2, 3, 4, 'n5'])
 
+    def test_list_field_delta(self):
+        class Emba(EmbeddedDocument):
+            name = StringField()
+        class TestDocument(Document):
+            list_fld = ListField(EmbeddedDocumentField(Emba))
+
+        TestDocument.drop_collection()
+
+        TestDocument(list_fld=[Emba(name="hello")]).save()
+
+        td = TestDocument.objects().first()
+        td.list_fld.extend([None])
+        td.list_fld[1] = Emba(name="world")
+        td.save()
+
+        self.assertEqual(2, len(TestDocument.objects().first().list_fld))
+
     def test_list_field_passed_in_value(self):
         class Foo(Document):
             bars = ListField(ReferenceField("Bar"))
