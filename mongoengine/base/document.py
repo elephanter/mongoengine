@@ -531,7 +531,7 @@ class BaseDocument(object):
         changed_fields += getattr(self, '_changed_fields', [])
 
         inspected = inspected or set()
-        if hasattr(self, 'id') and isinstance(self.id, Hashable):
+        if hasattr(self, 'id') and isinstance(self.id, Hashable) and not self.id is None:
             if self.id in inspected:
                 return changed_fields
             inspected.add(self.id)
