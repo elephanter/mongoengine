@@ -647,7 +647,15 @@ class EmbeddedDocumentField(BaseField):
         self.document_type.validate(value, clean)
 
     def lookup_member(self, member_name):
-        return self.document_type._fields.get(member_name)
+        field = None
+        if member_name in self.document_type._fields:
+            field = self.document_type._fields.get(member_name)
+        elif self.document_type._meta.get('allow_inheritance') or self.document_type._meta.get('abstract', False):
+            try:
+                field = self.document_type._lookup_field(member_name)
+            except LookUpError:
+                pass
+        return field
 
     def prepare_query_value(self, op, value):
         if value is not None and not isinstance(value, self.document_type):

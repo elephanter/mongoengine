@@ -982,7 +982,6 @@ class BaseDocument(object):
             if field_name.isdigit() and isinstance(field, ListField):
                 fields.append(field_name)
                 continue
-
             # Look up first field from the document
             if field is None:
                 if field_name == 'pk':
@@ -1020,14 +1019,18 @@ class BaseDocument(object):
                 # If the parent field has a "field" attribute which has a
                 # lookup_member method, call it to find the field
                 # corresponding to this iteration.
-                if hasattr(getattr(field, 'field', None), 'lookup_member'):
+                if isinstance(field, ComplexBaseField):
+                    field = field.field
+                    fields.append(field_name)
+                    continue
+                elif hasattr(getattr(field, 'field', None), 'lookup_member'):
                     new_field = field.field.lookup_member(field_name)
 
                 # If the parent field is a DynamicField or if it's part of
                 # a DynamicDocument, mark current field as a DynamicField
                 # with db_name equal to the field name.
                 elif cls._dynamic and (isinstance(field, DynamicField) or
-                                       getattr(getattr(field, 'document_type', None), '_dynamic', None)):
+                                       getattr(getattr(field, 'document_type', None), '_dynamic', None)): 
                     new_field = DynamicField(db_field=field_name)
 
                 # Else, try to use the parent field's lookup_member method
@@ -1042,13 +1045,7 @@ class BaseDocument(object):
                         'on the field {}'.format(field_name, field.name)
                     )
 
-                # If current field still wasn't found and the parent field
-                # is a ComplexBaseField, add the name current field name and
-                # move on.
-                if not new_field and isinstance(field, ComplexBaseField):
-                    fields.append(field_name)
-                    continue
-                elif not new_field:
+                if not new_field:
                     raise LookUpError('Cannot resolve field "%s"' % field_name)
 
                 field = new_field  # update field to the new field type
