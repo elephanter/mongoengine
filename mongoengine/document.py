@@ -1,4 +1,5 @@
 import re
+import os
 import warnings
 
 from bson.dbref import DBRef
@@ -183,15 +184,17 @@ class Document(BaseDocument):
     @classmethod
     def _get_collection(cls):
         """Return a PyMongo collection for the document."""
-        if not hasattr(cls, '_collection') or cls._collection is None:
+        if not hasattr(cls, '_collection') or cls._collection is None or cls._collection_pid != os.getpid():
 
             # Get the collection, either capped or regular.
             if cls._meta.get('max_size') or cls._meta.get('max_documents'):
                 cls._collection = cls._get_capped_collection()
+                cls._collection_pid = os.getpid()	
             else:
                 db = cls._get_db()
                 collection_name = cls._get_collection_name()
                 cls._collection = db[collection_name]
+                cls._collection_pid = os.getpid()
 
             # Ensure indexes on the collection unless auto_create_index was
             # set to False.

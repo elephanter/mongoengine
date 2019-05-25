@@ -1,5 +1,6 @@
 from pymongo import MongoClient, ReadPreference, uri_parser
 import six
+import os
 
 from mongoengine.python_support import IS_PYMONGO_3
 
@@ -117,11 +118,11 @@ def register_connection(alias, name=None, host=None, port=None,
 
 def disconnect(alias=DEFAULT_CONNECTION_NAME):
     """Close the connection with a given alias."""
-    if alias in _connections:
+    if alias+"_"+str(os.getpid()) in _connections:
         get_connection(alias=alias).close()
-        del _connections[alias]
+        del _connections[alias+"_"+str(os.getpid())]
     if alias in _dbs:
-        del _dbs[alias]
+        del _dbs[alias+"_"+str(os.getpid())]
 
 
 def get_connection(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
@@ -134,7 +135,7 @@ def get_connection(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
     # If the requested alias already exists in the _connections list, return
     # it immediately.
     if alias in _connections:
-        return _connections[alias]
+        return _connections[alias+"_"+str(os.getpid())]
 
     # Validate that the requested alias exists in the _connection_settings.
     # Raise MongoEngineConnectionError if it doesn't.
@@ -198,23 +199,23 @@ def get_connection(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
     )
     for db_alias, connection_settings in connection_settings_iterator:
         connection_settings = _clean_settings(connection_settings)
-        if conn_settings == connection_settings and _connections.get(db_alias):
-            existing_connection = _connections[db_alias]
+        if conn_settings == connection_settings and _connections.get(db_alias+"_"+str(os.getpid())):
+            existing_connection = _connections[db_alias+"_"+str(os.getpid())]
             break
 
     # If an existing connection was found, assign it to the new alias
     if existing_connection:
-        _connections[alias] = existing_connection
+        _connections[alias+"_"+str(os.getpid())] = existing_connection
     else:
         # Otherwise, create the new connection for this alias. Raise
         # MongoEngineConnectionError if it can't be established.
         try:
-            _connections[alias] = connection_class(**conn_settings)
+            _connections[alias+"_"+str(os.getpid())] = connection_class(**conn_settings)
         except Exception as e:
             raise MongoEngineConnectionError(
                 'Cannot connect to database %s :\n%s' % (alias, e))
 
-    return _connections[alias]
+    return _connections[alias+"_"+str(os.getpid())]
 
 
 def get_db(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
@@ -232,8 +233,8 @@ def get_db(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
         if conn_settings['username'] and (conn_settings['password'] or
                                           conn_settings['authentication_mechanism'] == 'MONGODB-X509'):
             db.authenticate(conn_settings['username'], conn_settings['password'], **auth_kwargs)
-        _dbs[alias] = db
-    return _dbs[alias]
+        _dbs[alias+"_"+str(os.getpid())] = db
+    return _dbs[alias+"_"+str(os.getpid())]
 
 
 def connect(db=None, alias=DEFAULT_CONNECTION_NAME, **kwargs):
