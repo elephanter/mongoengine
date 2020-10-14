@@ -90,7 +90,7 @@ class QuerySet(BaseQuerySet):
             # Raise StopIteration if we already established there were no more
             # docs in the db cursor.
             if not self._has_more:
-                raise StopIteration
+                return
 
             # Otherwise, populate more of the cache and repeat.
             if len(self._result_cache) <= pos:
@@ -113,7 +113,7 @@ class QuerySet(BaseQuerySet):
         # the result cache.
         try:
             for _ in xrange(ITER_CHUNK_SIZE):
-                self._result_cache.append(self.next())
+                self._result_cache.append(next(self))
         except StopIteration:
             # Getting this exception means there are no more docs in the
             # db cursor. Set _has_more to False so that we can use that
@@ -168,7 +168,7 @@ class QuerySetNoCache(BaseQuerySet):
         data = []
         for _ in xrange(REPR_OUTPUT_SIZE + 1):
             try:
-                data.append(self.next())
+                data.append(next(self))
             except StopIteration:
                 break
 

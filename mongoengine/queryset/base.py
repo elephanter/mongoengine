@@ -269,13 +269,13 @@ class BaseQuerySet(object):
         queryset = queryset.filter(*q_objs, **query)
 
         try:
-            result = queryset.next()
+            result = next(queryset)
         except StopIteration:
             msg = ('%s matching query does not exist.'
                    % queryset._document._class_name)
             raise queryset._document.DoesNotExist(msg)
         try:
-            queryset.next()
+            next(queryset)
         except StopIteration:
             return result
 
@@ -1457,13 +1457,13 @@ class BaseQuerySet(object):
 
     # Iterator helpers
 
-    def next(self):
+    def __next__(self):
         """Wrap the result in a :class:`~mongoengine.Document` object.
         """
         if self._limit == 0 or self._none:
-            raise StopIteration
+            return
 
-        raw_doc = self._cursor.next()
+        raw_doc = next(self._cursor)
 
         if self._as_pymongo:
             return self._get_as_pymongo(raw_doc)
