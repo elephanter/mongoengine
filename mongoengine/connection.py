@@ -1,3 +1,4 @@
+import os
 from pymongo import MongoClient, ReadPreference, uri_parser
 from pymongo.database import _check_name
 
@@ -25,6 +26,8 @@ _dbs = {}
 
 READ_PREFERENCE = ReadPreference.PRIMARY
 
+def real_alias(alias):
+    return alias+"_"+str(os.getpid())
 
 class ConnectionFailure(Exception):
     """Error raised when the database connection can't be established or
@@ -224,17 +227,17 @@ def disconnect(alias=DEFAULT_CONNECTION_NAME):
     from mongoengine.base.common import _get_documents_by_db
     from mongoengine import Document
 
-    if alias in _connections:
+    if real_alias(alias) in _connections:
         get_connection(alias=alias).close()
-        del _connections[alias]
+        del _connections[real_alias(alias)]
 
-    if alias in _dbs:
+    if real_alias(alias) in _dbs:
         # Detach all cached collections in Documents
-        for doc_cls in _get_documents_by_db(alias, DEFAULT_CONNECTION_NAME):
+        for doc_cls in _get_documents_by_db(real_alias(alias), real_alias(DEFAULT_CONNECTION_NAME)):
             if issubclass(doc_cls, Document):  # Skip EmbeddedDocument
                 doc_cls._disconnect()
 
-        del _dbs[alias]
+        del _dbs[real_alias(alias)]
 
     if alias in _connection_settings:
         del _connection_settings[alias]
@@ -255,14 +258,14 @@ def get_connection(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
 
     # If the requested alias already exists in the _connections list, return
     # it immediately.
-    if alias in _connections:
-        return _connections[alias]
+    if real_alias(alias) in _connections:
+        return _connections[real_alias(alias)]
 
     # Validate that the requested alias exists in the _connection_settings.
     # Raise ConnectionFailure if it doesn't.
     if alias not in _connection_settings:
         if alias == DEFAULT_CONNECTION_NAME:
-            msg = "You have not defined a default connection"
+            msg = "You have not defined a default connection %s %s, %s" % (alias, real_alias(alias), _connection_settings.keys())
         else:
             msg = 'Connection with alias "%s" has not been defined' % alias
         raise ConnectionFailure(msg)
@@ -305,8 +308,8 @@ def get_connection(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
         connection = _create_connection(
             alias=alias, connection_class=connection_class, **conn_settings
         )
-    _connections[alias] = connection
-    return _connections[alias]
+    _connections[real_alias(alias)] = connection
+    return _connections[real_alias(alias)]
 
 
 def _create_connection(alias, connection_class, **connection_settings):
@@ -345,14 +348,14 @@ def _find_existing_connection(connection_settings):
     for db_alias, connection_settings in connection_settings_bis:
         db_conn_settings = _clean_settings(connection_settings)
         if cleaned_conn_settings == db_conn_settings and _connections.get(db_alias):
-            return _connections[db_alias]
+            return _connections[real_alias(db_alias)]
 
 
 def get_db(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
     if reconnect:
-        disconnect(alias)
+        disconnect(real_alias(alias))
 
-    if alias not in _dbs:
+    if real_alias(alias) not in _dbs:
         conn = get_connection(alias)
         conn_settings = _connection_settings[alias]
         db = conn[conn_settings["name"]]
@@ -367,8 +370,8 @@ def get_db(alias=DEFAULT_CONNECTION_NAME, reconnect=False):
             db.authenticate(
                 conn_settings["username"], conn_settings["password"], **auth_kwargs
             )
-        _dbs[alias] = db
-    return _dbs[alias]
+        _dbs[real_alias(alias)] = db
+    return _dbs[real_alias(alias)]
 
 
 def connect(db=None, alias=DEFAULT_CONNECTION_NAME, **kwargs):
@@ -389,7 +392,7 @@ def connect(db=None, alias=DEFAULT_CONNECTION_NAME, **kwargs):
 
     .. versionchanged:: 0.6 - added multiple database support.
     """
-    if alias in _connections:
+    if real_alias(alias) in _connections:
         prev_conn_setting = _connection_settings[alias]
         new_conn_settings = _get_connection_settings(db, **kwargs)
 
