@@ -144,7 +144,9 @@ class BaseList(list):
         return value
 
     def __iter__(self):
-        yield from super().__iter__()
+        for i in range(self.__len__()):
+            yield self[i]
+        #yield from super().__iter__()
 
     def __getstate__(self):
         self.instance = None

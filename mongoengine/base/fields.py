@@ -231,8 +231,12 @@ class BaseField:
                     # breaking change of 0.18
                     # Get rid of True/False-type return for the validation method
                     # in favor of having validation raising a ValidationError
+
                     ret = self.validation(value)
                     if ret is not None:
+                        #import pytest
+                        #pytest.set_trace()
+                        #self.validation(value)
                         raise DeprecatedError(
                             "validation argument for `%s` must not return anything, "
                             "it should raise a ValidationError if validation fails"
